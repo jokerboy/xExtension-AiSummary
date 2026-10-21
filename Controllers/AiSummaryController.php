@@ -293,7 +293,8 @@ PROMPT;
 	private function callAnthropic(string $apiKey, string $model, string $systemPrompt, string $userPrompt): void {
 		$payload = [
 			'model' => $model,
-			'max_tokens' => 1024,
+			'max_tokens' => 4096,
+			'output_config' => ['effort' => 'low'], // local patch 2026-10-20: thinking used the whole 1024 cap
 			'stream' => true,
 			'messages' => [
 				['role' => 'user', 'content' => $userPrompt],
