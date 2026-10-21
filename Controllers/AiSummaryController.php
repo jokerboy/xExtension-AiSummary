@@ -23,6 +23,10 @@ final class FreshExtension_AiSummary_Controller extends Minz_ActionController {
 
 	private const MIN_CONTENT_LENGTH = 200;
 
+	private const PAYWALL_MIN_TEXT = 3000;
+
+	private string $fetchError = '';
+
 	private const DEFAULT_PROMPT = <<<'PROMPT'
 Based on the following requirements, please analyze the article and produce the output that includes a concise summary, key takeaways, and additional contextual insights. The output language should be {language}. Use clear, accessible, and natural phrasing suitable for general readers.
 
@@ -130,9 +134,17 @@ PROMPT;
 					$this->sendEvent('status', $statusMsg);
 				}
 				$fetched = $this->fetchArticleContent($link);
-				if ($fetched !== '') {
-					$content = $fetched;
+				// Local patch 2026-10-21: report paywalled/blocked/unreadable pages instead of summarizing the stub
+				if ($this->fetchError !== '' || mb_strlen($fetched) < self::MIN_CONTENT_LENGTH) {
+					$errorMsg = json_encode(['message' => $this->fetchError !== ''
+						? $this->fetchError
+						: 'Could not extract readable text from the article page.']);
+					if (is_string($errorMsg)) {
+						$this->sendEvent('error', $errorMsg);
+					}
+					return;
 				}
+				$content = $fetched;
 			}
 		}
 
@@ -425,13 +437,16 @@ PROMPT;
 	}
 
 	private function fetchArticleContent(string $url): string {
+		$this->fetchError = '';
 		$scheme = parse_url($url, PHP_URL_SCHEME);
 		if (!in_array($scheme, ['http', 'https'], true)) {
+			$this->fetchError = 'The article link is not an http(s) URL.';
 			return '';
 		}
 
 		$ch = curl_init($url);
 		if ($ch === false) {
+			$this->fetchError = 'Could not retrieve the article.';
 			return '';
 		}
 
@@ -447,9 +462,17 @@ PROMPT;
 
 		$html = curl_exec($ch);
 		$httpCode = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
+		$curlError = curl_error($ch);
 		unset($ch);
 
+		if (in_array($httpCode, [401, 402, 403, 429], true)) {
+			$this->fetchError = "Could not retrieve the article: the site refused the request (HTTP {$httpCode}). It may be paywalled or block automated access.";
+			return '';
+		}
 		if (!is_string($html) || $httpCode >= 400 || $html === '') {
+			$this->fetchError = $httpCode > 0
+				? "Could not retrieve the article (HTTP {$httpCode})."
+				: 'Could not retrieve the article (' . ($curlError !== '' ? $curlError : 'no response') . ').';
 			return '';
 		}
 
@@ -463,6 +486,13 @@ PROMPT;
 			if (is_string($oldLimit)) {
 				ini_set('pcre.backtrack_limit', $oldLimit);
 			}
+		}
+
+		// Schema.org paywall markup; long text means the site serves the full article anyway
+		if (preg_match('/"isAccessibleForFree"\s*:\s*"?false/i', $html) === 1
+			&& mb_strlen($text) < self::PAYWALL_MIN_TEXT) {
+			$this->fetchError = 'Paywalled article: the site marks it as subscriber-only, so there is no article text to summarize.';
+			return '';
 		}
 
 		return $text;
