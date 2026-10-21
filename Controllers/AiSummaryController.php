@@ -25,6 +25,9 @@ final class FreshExtension_AiSummary_Controller extends Minz_ActionController {
 
 	private const PAYWALL_MIN_TEXT = 3000;
 
+	// Feed text at least this long is treated as the full article when the page can't be fetched
+	private const FULL_FEED_MIN_TEXT = 1500;
+
 	private string $fetchError = '';
 
 	private const DEFAULT_PROMPT = <<<'PROMPT'
@@ -125,17 +128,20 @@ PROMPT;
 
 		$content = $this->extractText($entry->content());
 
-		// If RSS content is too short, fetch the full article from the original URL
-		if (mb_strlen($content) < self::MIN_CONTENT_LENGTH) {
-			$link = $entry->link();
-			if ($link !== '') {
-				$statusMsg = json_encode(['message' => 'Fetching full article…']);
-				if (is_string($statusMsg)) {
-					$this->sendEvent('status', $statusMsg);
-				}
-				$fetched = $this->fetchArticleContent($link);
-				// Local patch 2026-10-21: report paywalled/blocked/unreadable pages instead of summarizing the stub
-				if ($this->fetchError !== '' || mb_strlen($fetched) < self::MIN_CONTENT_LENGTH) {
+		// Local patch: always fetch the full article from the original URL, since many feeds
+		// carry only a teaser; keep the feed text when it is longer than what the page yields.
+		$link = $entry->link();
+		if ($link !== '') {
+			$statusMsg = json_encode(['message' => 'Fetching full article…']);
+			if (is_string($statusMsg)) {
+				$this->sendEvent('status', $statusMsg);
+			}
+			$fetched = $this->fetchArticleContent($link);
+			if (mb_strlen($fetched) > mb_strlen($content)) {
+				$content = $fetched;
+			} elseif (mb_strlen($content) < self::FULL_FEED_MIN_TEXT) {
+				// Report paywalled/blocked/unreadable pages instead of summarizing a teaser
+				if ($this->fetchError !== '' || mb_strlen($content) < self::MIN_CONTENT_LENGTH) {
 					$errorMsg = json_encode(['message' => $this->fetchError !== ''
 						? $this->fetchError
 						: 'Could not extract readable text from the article page.']);
@@ -144,7 +150,6 @@ PROMPT;
 					}
 					return;
 				}
-				$content = $fetched;
 			}
 		}
 
