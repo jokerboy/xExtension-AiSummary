@@ -453,7 +453,19 @@ PROMPT;
 			return '';
 		}
 
-		return $this->extractReadableText($html);
+		// FreshRSS lowers pcre.backtrack_limit to 10000, which makes the lazy regexes in
+		// extractReadableText() fail on normal-sized pages; raise it for this step only.
+		$oldLimit = ini_get('pcre.backtrack_limit');
+		ini_set('pcre.backtrack_limit', '1000000');
+		try {
+			$text = $this->extractReadableText($html);
+		} finally {
+			if (is_string($oldLimit)) {
+				ini_set('pcre.backtrack_limit', $oldLimit);
+			}
+		}
+
+		return $text;
 	}
 
 	private function extractReadableText(string $html): string {
